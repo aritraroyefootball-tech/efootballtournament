@@ -1,46 +1,38 @@
-// Vercel Serverless Function: stores the tournament state in Upstash Redis
-const URL_ = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-const TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
-const KEY = 'efootball:state';
+// Vercel Serverless Function: tournament state in Supabase Postgres.
+// GET is public; POST needs a logged-in admin session (see api/_lib/auth.js).
+const { route, send, body, HttpError } = require('./_lib/http');
+const { requireAdmin } = require('./_lib/auth');
+const { current, saveState } = require('./_lib/store');
+const { diffState } = require('./_lib/diff');
 
-async function redis(cmd) {
-  const r = await fetch(URL_, {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
-    body: JSON.stringify(cmd),
-  });
-  const j = await r.json();
-  if (j.error) throw new Error(j.error);
-  return j.result;
-}
+module.exports = route({
+  async GET(req, res) {
+    return send(res, 200, await current());
+  },
 
-module.exports = async function handler(req, res) {
-  res.setHeader('Cache-Control', 'no-store');
-  try {
-    if (!URL_ || !TOKEN) return res.status(500).json({ error: 'Database env vars missing' });
+  async POST(req, res) {
+    const me = await requireAdmin(req);
+    const b = body(req), d = b.data;
+    if (!d || d.v !== 1 || !Array.isArray(d.players)) throw new HttpError(400, 'Invalid data');
+    if (JSON.stringify(d).length > 1e6) throw new HttpError(413, 'State too large');
+    const baseRev = Number(b.baseRev);
+    if (!Number.isFinite(baseRev) || baseRev < 0) throw new HttpError(400, 'Invalid baseRev');
 
-    if (req.method === 'GET') {
-      const v = await redis(['GET', KEY]);
-      if (!v) return res.status(200).json({ data: null, rev: 0 });
-      return res.status(200).json(JSON.parse(v));
+    const cur = await current();
+    if (cur.rev !== baseRev) return send(res, 409, { error: 'Conflict', ...cur });
+
+    let df;
+    try {
+      df = cur.data ? diffState(cur.data, d, b.action) : { action: 'state_init', summary: 'Initial tournament state saved', changes: [] };
+    } catch (e) {
+      df = { action: 'state_update', summary: 'State updated (diff unavailable)', changes: [] };
     }
-
-    if (req.method === 'POST') {
-      const pw = req.headers['x-admin-password'];
-      if (!process.env.ADMIN_PASSWORD || pw !== process.env.ADMIN_PASSWORD)
-        return res.status(401).json({ error: 'Wrong password' });
-      const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
-      if (body.check) return res.status(200).json({ ok: true });
-      const d = body.data;
-      if (!d || d.v !== 1 || !Array.isArray(d.players))
-        return res.status(400).json({ error: 'Invalid data' });
-      const rev = Date.now();
-      await redis(['SET', KEY, JSON.stringify({ data: d, rev })]);
-      return res.status(200).json({ ok: true, rev });
-    }
-
-    return res.status(405).json({ error: 'Method not allowed' });
-  } catch (e) {
-    return res.status(500).json({ error: String(e.message || e) });
-  }
-};
+    const r = await saveState({
+      baseRev, data: d, actor: me,
+      action: df.action, summary: df.summary, details: { changes: df.changes },
+      reason: `Before ${df.action}: ${df.summary}`,
+    });
+    if (!r.ok) return send(res, 409, { error: 'Conflict', ...(await current()) });
+    return send(res, 200, { ok: true, rev: r.rev });
+  },
+});
