@@ -1,12 +1,14 @@
 // Vercel Serverless Function: tournament state in Supabase Postgres.
-// GET is public; POST needs a logged-in admin session (see api/_lib/auth.js).
-const { route, send, body, HttpError } = require('./_lib/http');
+// GET is public (?rev=N → {unchanged:true} when N is still current); POST needs a logged-in admin session (see api/_lib/auth.js).
+const { route, send, body, query, HttpError } = require('./_lib/http');
 const { requireAdmin } = require('./_lib/auth');
-const { current, saveState } = require('./_lib/store');
+const { current, currentRev, saveState } = require('./_lib/store');
 const { diffState } = require('./_lib/diff');
 
 module.exports = route({
   async GET(req, res) {
+    const since = Number(query(req).rev);
+    if (Number.isFinite(since) && since > 0 && (await currentRev()) === since) return send(res, 200, { unchanged: true, rev: since });
     return send(res, 200, await current());
   },
 

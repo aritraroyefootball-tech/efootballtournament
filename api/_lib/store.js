@@ -7,6 +7,12 @@ async function current() {
   return row ? { data: row.data, rev: Number(row.rev) } : { data: null, rev: 0 };
 }
 
+// Just the revision, so polling clients can be told "nothing changed" without sending the whole state.
+async function currentRev() {
+  const row = check(await db().from('tournament_state').select('rev').eq('id', 1).maybeSingle());
+  return row ? Number(row.rev) : 0;
+}
+
 // Returns { ok, rev }. ok=false means someone else saved first (rev changed).
 async function saveState({ baseRev, data, actor, action, summary, details, reason }) {
   const r = check(await db().rpc('save_state', {
@@ -22,4 +28,4 @@ async function saveState({ baseRev, data, actor, action, summary, details, reaso
   return { ok: !!(r && r.ok), rev: Number(r && r.rev) || 0 };
 }
 
-module.exports = { current, saveState };
+module.exports = { current, currentRev, saveState };
