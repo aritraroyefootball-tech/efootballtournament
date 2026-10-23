@@ -97,6 +97,7 @@ h1,.br,.ov h1,.gt{font-family:'Outfit',system-ui,Arial,sans-serif;font-weight:80
 }
 @media(prefers-reduced-motion:reduce){.pl img{animation:none!important}}
 </style></head><body><div id="app"></div><div id="toast" hidden></div>
+<script src="sync.js"></script>
 <script>
 const K='efa1';
 const SEED=()=>[];
@@ -104,24 +105,53 @@ const def=()=>({v:1,title:'eFootball Arena Championship',sub:'Your tournament. Y
 let S;try{S=JSON.parse(localStorage.getItem(K));if(!S||S.v!==1||!Array.isArray(S.players))throw 0}catch(e){S=def()}
 if(!Array.isArray(S.hist))S.hist=SEED();S.hist=S.hist.filter(x=>!x.s);if(!S.tid)S.tid='t'+Date.now();
 let ED=false,ME=null,PACT='',INFL=false,NS=null;try{sessionStorage.removeItem('ed');sessionStorage.removeItem('pw')}catch(e){}
-let V='welcome',MG='all',PD={},D=null,SHOW=false,LERR='';
+let V='welcome',MG='all',PD={},D=null,DB=null,DSTALE=false,CONF={},SHOW=false,LERR='';
 // ---------- realtime sync (Vercel API + Supabase) ----------
-const API='/api/state';let SREV=0,PUSHT=null;
+// Saves only ever go through POST /api/state. Updates arrive via Supabase Realtime (listen-only) or polling.
+const API='/api/state';let SREV=0,PUSHT=null,QD=null,RTOK=false,LTST=0,POLLT=null;
 async function api(p,m,b){const r=await fetch(p,{method:m||'GET',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Requested-With':'arena'},body:b?JSON.stringify(b):undefined});const j=await r.json().catch(()=>({}));return{r,j}}
 const NOC={r:{},j:{error:'No connection to server.'}};
 function leaveEd(m){ED=false;ME=null;D=null;if(/^(set|act|adm|pw)$/.test(V))V='dash';R();toast(m,'er')}
-function push(){clearTimeout(PUSHT);PUSHT=setTimeout(async()=>{if(INFL){push();return}PUSHT=null;if(!ED||ME.mustChangePassword)return;INFL=true;const a=PACT;PACT='';try{const{r,j}=await api(API,'POST',{data:S,baseRev:SREV,action:a||undefined});if(r.ok){SREV=j.rev}else if(r.status==409){if(j.data){S=j.data;if(!Array.isArray(S.hist))S.hist=[];SREV=j.rev;try{localStorage.setItem(K,JSON.stringify(S))}catch(e){}D=V=='set'?JSON.parse(JSON.stringify(S)):null;PD={};R();toast('Another admin changed this, latest version loaded','er')}else{SREV=j.rev||0;PACT=PACT||a;push()}}else if(r.status==401){leaveEd('Session expired. Please log in again.')}else if(r.status==403){if(j.mustChangePassword){ME.mustChangePassword=true;go('pw')}else leaveEd('You no longer have edit access.')}else{PACT=PACT||a;toast('Sync failed. Will retry on next change.','er')}}catch(e){PACT=PACT||a;toast('Offline: change not synced yet','er')}finally{INFL=false}},250)}
-async function pull(first){try{const r=await fetch(API+'?t='+Date.now(),{cache:'no-store'});if(!r.ok)return;const j=await r.json();if(!j.data)return 'empty';if(j.rev===SREV)return;
-const d=j.data;if(d.v!==1||!Array.isArray(d.players))return;
-if(!first){const a=document.activeElement;if((ED&&(V=='set'||PUSHT||INFL))||V=='welcome'||document.querySelector('[role=dialog]')||(a&&/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)))return}
-SREV=j.rev;if(JSON.stringify(d)!==JSON.stringify(S)){S=d;if(!Array.isArray(S.hist))S.hist=[];S.hist=S.hist.filter(x=>!x.s);if(!S.tid)S.tid='t'+Date.now();try{localStorage.setItem(K,JSON.stringify(S))}catch(e){}if(!first)R()}}catch(e){}}
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)pull()});
+function push(){clearTimeout(PUSHT);PUSHT=setTimeout(async()=>{if(INFL){push();return}PUSHT=null;if(!ED||ME.mustChangePassword)return;INFL=true;const a=PACT;PACT='';try{const{r,j}=await api(API,'POST',{data:S,baseRev:SREV,action:a||undefined});if(r.ok){SREV=j.rev}else if(r.status==409){if(j.data){S=j.data;if(!Array.isArray(S.hist))S.hist=[];SREV=j.rev;try{localStorage.setItem(K,JSON.stringify(S))}catch(e){}if(V=='set')newD();else D=null;PD={};R();toast('Another admin changed this, latest version loaded','er')}else{SREV=j.rev||0;PACT=PACT||a;push()}}else if(r.status==401){leaveEd('Session expired. Please log in again.')}else if(r.status==403){if(j.mustChangePassword){ME.mustChangePassword=true;go('pw')}else leaveEd('You no longer have edit access.')}else{PACT=PACT||a;toast('Sync failed. Will retry on next change.','er')}}catch(e){PACT=PACT||a;toast('Offline: change not synced yet','er')}finally{INFL=false;setTimeout(flushQ,0)}},250)}
+const norm=d=>{if(!Array.isArray(d.hist))d.hist=[];d.hist=d.hist.filter(x=>!x.s);if(!d.tid)d.tid='t'+Date.now();return d};
+// first: initial load, login, restore (applied as-is, no render). Otherwise goes through applyRemote.
+async function pull(first){try{const r=await fetch(API+'?t='+Date.now()+(SREV?'&rev='+SREV:''),{cache:'no-store'});if(!r.ok)return;const j=await r.json();if(j.unchanged)return;if(!j.data)return 'empty';if(j.rev===SREV)return;
+const d=j.data;if(!SYNC.valid(d))return;
+if(first){SREV=j.rev;if(JSON.stringify(d)!==JSON.stringify(S)){S=norm(d);try{localStorage.setItem(K,JSON.stringify(S))}catch(e){}}}else applyRemote(d,j.rev)}catch(e){}}
+// Applies a newer state saved by someone else without clobbering local work: waits while our own save is
+// in flight or a confirm dialog is open, keeps unsaved scores (PD) and leaves a dirty Settings draft (D) alone.
+function applyRemote(d,rev){if(!SYNC.newer(rev,SREV)||!SYNC.valid(d))return;
+if((ED&&(PUSHT||INFL))||document.querySelector('.ov[role=alertdialog]')){QD={d,rev};return}QD=null;
+const o=S,boot=!SREV;S=norm(d);SREV=rev;try{localStorage.setItem(K,JSON.stringify(S))}catch(e){}if(JSON.stringify(o)===JSON.stringify(S))return;
+for(const id in CONF)if(!PD[id])delete CONF[id];SYNC.changed(o.sc,S.sc).forEach(id=>{if(PD[id])CONF[id]=1});
+if(D){if(SYNC.dirty(D,DB))DSTALE=true;else newD()}
+if(!/^(welcome|login|pw|act|adm)$/.test(V))keepR();
+if(!boot&&V!='welcome'&&SYNC.due(LTST,Date.now())){LTST=Date.now();toast('Updated by another admin')}}
+function flushQ(){if(QD){const q=QD;QD=null;applyRemote(q.d,q.rev)}}
+function newD(){D=JSON.parse(JSON.stringify(S));DB=JSON.parse(JSON.stringify(S));DSTALE=false}
+// R() that keeps focus, caret and typed-but-unsaved values (e.g. a knockout score not confirmed yet).
+function keepR(){const ctl=()=>[...document.querySelectorAll('main input,main select,main textarea')],a=document.activeElement,fi=ctl().indexOf(a),fid=a&&a.id,sel=fi>=0&&typeof a.selectionStart=='number'?[a.selectionStart,a.selectionEnd]:null,vals={};
+ctl().forEach(e=>{if(!e.id||e.type=='file')return;const dv=e.tagName=='SELECT'?([...e.options].find(o=>o.defaultSelected)||e.options[0]||{}).value:e.defaultValue;if(e.value!==dv)vals[e.id]=e.value});
+R();for(const id in vals){const e=document.getElementById(id);if(e)e.value=vals[id]}if(V=='ko')document.querySelectorAll('main .m select[id]').forEach(e=>tg(e.id.slice(0,-1)));
+if(fi>=0){const e=(fid&&document.getElementById(fid))||ctl()[fi];if(e){e.focus({preventScroll:true});if(sel)try{e.setSelectionRange(sel[0],sel[1])}catch(x){}}}}
+// Polling fallback: every 5 s while the tab is visible (30 s while Realtime is connected), paused while hidden.
+function poll(){clearTimeout(POLLT);if(document.hidden)return;POLLT=setTimeout(()=>pull().finally(poll),RTOK?30e3:5e3)}
+document.addEventListener('visibilitychange',()=>{if(document.hidden)clearTimeout(POLLT);else{pull();poll()}});
+addEventListener('online',()=>pull());
+// Realtime: listen-only, with the public anon key (RLS allows SELECT on tournament_state only). No key configured → polling only.
+const SBJS='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js',SBSRI='sha384-TcHRA3zBbn+Lexh5n+Oil4guNPOS3rjNDpGRAN46u/s/mB2IZ50ceC6TYDU2yvgK';
+async function live(){try{const{r,j}=await api('/api/config');if(!r.ok||!j.supabaseUrl||!j.anonKey)return;
+await new Promise((ok,no)=>{const e=document.createElement('script');e.src=SBJS;e.integrity=SBSRI;e.crossOrigin='anonymous';e.onload=ok;e.onerror=no;document.head.appendChild(e)});
+const sb=supabase.createClient(j.supabaseUrl,j.anonKey,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}});
+sb.channel('tournament_state').on('postgres_changes',{event:'UPDATE',schema:'public',table:'tournament_state',filter:'id=eq.1'},p=>{const n=p.new||{},rev=Number(n.rev);
+if((p.errors&&p.errors.length)||!SYNC.valid(n.data)||!Number.isFinite(rev)||JSON.stringify(n.data).length>1e6)return pull();applyRemote(n.data,rev)})
+.subscribe(st=>{const was=RTOK;RTOK=st=='SUBSCRIBED';if(RTOK)pull();if(was!=RTOK)poll()})}catch(e){}}
 const save=()=>{syncH();try{localStorage.setItem(K,JSON.stringify(S))}catch(e){}push()};
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
 const nm=id=>id?esc((S.players.find(p=>p.id==id)||{}).name):'TBD';
 const GN=g=>String.fromCharCode(65+g);
 const toast=(m,c)=>{const t=document.getElementById('toast');t.textContent=m;t.className=c||'';t.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>t.hidden=true,3500)};
-function go(v){if(AC&&AC.state!='running')AC.resume();if(/^(set|act|adm|pw)$/.test(v)&&!ED)v='login';if(v=='adm'&&ME.role!='owner')v='dash';if(v!=V)LERR='';V=v;if(v=='set'&&!D)D=JSON.parse(JSON.stringify(S));if(v=='act')loadAud(true);if(v=='adm')loadAdm();scrollTo(0,0);R()}
+function go(v){if(AC&&AC.state!='running')AC.resume();if(/^(set|act|adm|pw)$/.test(v)&&!ED)v='login';if(v=='adm'&&ME.role!='owner')v='dash';if(v!=V)LERR='';V=v;if(v=='set'&&!D)newD();if(v=='act')loadAud(true);if(v=='adm')loadAdm();scrollTo(0,0);R()}
 // ---------- logic ----------
 function fx(){const o=[];for(let g=0;g<S.ng;g++){let a=S.players.filter(p=>p.g==g).map(p=>p.id);if(a.length%2)a.push(null);const n=a.length;for(let r=0;r<n-1;r++){for(let i=0;i<n/2;i++){const x=a[i],y=a[n-1-i];if(x&&y)o.push({id:`G${g}R${r+1}_${x}_${y}`,g,r:r+1,a:x,b:y})}a.splice(1,0,a.pop())}}return o}
 function st(g){const m={};S.players.filter(p=>p.g==g).forEach(p=>m[p.id]={id:p.id,P:0,W:0,D:0,L:0,GF:0,GA:0,Pts:0});
@@ -207,12 +237,12 @@ const cell=x=>{const s=PD[x.id]||S.sc[x.id]||['',''];if(!ED)return S.sc[x.id]?S.
 return[0,1].map(j=>`<span class=sc><button aria-label=minus onclick="adj('${x.id}',${j},-1)">−</button><input id="${x.id}${j}" inputmode=numeric value="${s[j]}" oninput="upd('${x.id}')"><button aria-label=plus onclick="adj('${x.id}',${j},1)">+</button></span>`).join(' ')};
 return`<h1>All League Matches</h1><div class=tabs>${['all',...Array(S.ng).keys()].map(g=>`<button class="b ${MG===g?'':'g'}" onclick="MG=${g=='all'?"'all'":g};R()">${g=='all'?'All':'Group '+GN(g)}</button>`).join('')}</div>
 <p>${f.length} matches · <span class=ok>${dn} completed</span> · <span class=wa>${f.length-dn} pending</span></p>
-<div class="pn tw"><table><tr><th>Rd</th><th>Match</th><th>Grp</th><th>Score</th><th>Status</th></tr>${f.map(x=>`<tr><td>${x.r}</td><td>${nm(x.a)} v ${nm(x.b)}</td><td>${GN(x.g)}</td><td>${cell(x)}</td><td>${S.sc[x.id]?'<span class="tag ok">✓ Completed</span>':PD[x.id]?'<span class="tag wa">Unsaved</span>':'<span class=tag>Pending</span>'}</td></tr>`).join('')}</table></div>
+<div class="pn tw"><table><tr><th>Rd</th><th>Match</th><th>Grp</th><th>Score</th><th>Status</th></tr>${f.map(x=>`<tr><td>${x.r}</td><td>${nm(x.a)} v ${nm(x.b)}</td><td>${GN(x.g)}</td><td>${cell(x)}</td><td>${S.sc[x.id]?'<span class="tag ok">✓ Completed</span>':PD[x.id]?'<span class="tag wa">Unsaved</span>':'<span class=tag>Pending</span>'}${PD[x.id]&&CONF[x.id]?' <span class="tag er">Another admin updated this match</span>':''}</td></tr>`).join('')}</table></div>
 ${ED?'<p><button class=b onclick="submitAll()">SUBMIT ALL SCORES</button></p>':''}`}
 const upd=id=>{PD[id]=[document.getElementById(id+0).value,document.getElementById(id+1).value]};
 function adj(id,j,d){const e=document.getElementById(id+j);e.value=Math.max(0,(parseInt(e.value)||0)+d);upd(id)}
 async function submitAll(){if(!ED)return;const bad=[];let n=0,unl=0;
-Object.keys(PD).forEach(id=>{const[a,b]=PD[id];if(a===''&&b===''){return}if(!/^\d+$/.test(a)||!/^\d+$/.test(b)){bad.push(id);return}const o=S.sc[id];if(!o||o[0]!=+a||o[1]!=+b){const g=+id.match(/^G(\d+)/)[1];S.players.filter(p=>p.g==g).forEach(p=>delete S.man[p.id]);if(S.lock&&S.lock[g]){delete S.lock[g];unl++}}S.sc[id]=[+a,+b];delete PD[id];n++});
+Object.keys(PD).forEach(id=>{const[a,b]=PD[id];if(a===''&&b===''){return}if(!/^\d+$/.test(a)||!/^\d+$/.test(b)){bad.push(id);return}const o=S.sc[id];if(!o||o[0]!=+a||o[1]!=+b){const g=+id.match(/^G(\d+)/)[1];S.players.filter(p=>p.g==g).forEach(p=>delete S.man[p.id]);if(S.lock&&S.lock[g]){delete S.lock[g];unl++}}S.sc[id]=[+a,+b];delete PD[id];delete CONF[id];n++});
 await syncKO();save();if(unl)toast(unl+' locked ranking(s) were unlocked because results changed.');if(bad.length){R();toast(bad.length+' match(es) have invalid or incomplete scores. Valid scores were saved.','er');return}
 const miss=fx().filter(f=>!S.sc[f.id]);if(miss.length){R();toast(`Saved ${n}. ${miss.length} league match(es) still need scores.`,'er');return}
 if(ties().length){await syncKO();save();go('stand');toast('Qualification tie detected. Resolve the manual ranking before confirming qualifiers.','er');return}
@@ -239,13 +269,13 @@ const rs=RN(),th=S.third&&rs>=2,cols=[];for(let k=0;k<rs;k++){const c=N()/2**(k+
 const c=champ(),tp=S.third&&rs>=2?`<div class=col style="min-width:260px;margin-top:14px"><h3>Third-place match</h3>${mcard('t','Third place',tparts())}</div>`:'';
 return`<h1>Knockout Stage</h1>${c?`<p>${rk()} <button class="b g" onclick="S.ann=false;R()">Replay reveal</button></p>`:''}<div class=ko>${cols.join('')}</div>${ED?'<p><button class="b g" onclick="redraw()">Regenerate draw</button></p>':''}`}
 function rk(){const c=champ();if(!c)return'';const ru=parts(RN()-1,0).find(x=>x!=c),tw=(S.ko.res.t||{}).w;return`🥇 <b style="color:var(--go)">${nm(c)}</b> · 🥈 ${nm(ru)}${S.third&&RN()>=2?' · 🥉 '+(tw?nm(tw):'Pending'):''}`}
-function ask(m){return new Promise(r=>{const d=document.createElement('div');d.className='ov';d.style.zIndex=40;d.setAttribute('role','alertdialog');d.innerHTML='<div class=pn style="max-width:420px;background:#0a1020"><p>'+esc(m)+'</p><button class=b id=y>Continue</button> <button class="b g" id=n>Cancel</button></div>';document.body.appendChild(d);d.querySelector('#y').onclick=()=>{d.remove();r(true)};d.querySelector('#n').onclick=()=>{d.remove();r(false)}})}
+function ask(m){return new Promise(r=>{const d=document.createElement('div');d.className='ov';d.style.zIndex=40;d.setAttribute('role','alertdialog');d.innerHTML='<div class=pn style="max-width:420px;background:#0a1020"><p>'+esc(m)+'</p><button class=b id=y>Continue</button> <button class="b g" id=n>Cancel</button></div>';document.body.appendChild(d);d.querySelector('#y').onclick=()=>{d.remove();r(true);setTimeout(flushQ,0)};d.querySelector('#n').onclick=()=>{d.remove();r(false);setTimeout(flushQ,0)}})}
 async function syncKO(){const nd=ready()&&Number.isInteger(RN())&&N()>=2?draw():null;if(JSON.stringify(nd)==JSON.stringify(S.ko.draw))return true;if(Object.keys(S.ko.res).length&&!await ask('This changes the knockout draw and clears existing knockout results. Continue?'))return false;S.ko={res:{},draw:nd};S.ann=false;return true}
 async function act(fn,msg){const snap=JSON.stringify(S),was=ready();fn();if(!await syncKO()){S=JSON.parse(snap);toast('Change cancelled');R();return}save();if(!was&&ready()){toast('Qualifiers confirmed. Knockout bracket created.');go('ko');return}toast(msg+(S.ko.draw?' · Knockout bracket updated':''));R()}
 function lockG(g,on){if(!ED)return;
 act(()=>{S.lock=S.lock||{};if(on){const r=st(g),c={};r.forEach(o=>{if(o.blk){c[o.k]=c[o.k]||0;S.man[o.id]=c[o.k]++}});S.lock[g]=true}else delete S.lock[g]},on?'Group '+GN(g)+' ranking locked':'Group '+GN(g)+' unlocked')}
 async function redraw(){if(!await ask('Regenerating the draw clears all knockout results. Continue?'))return;S.ko={res:{},draw:null};S.ann=false;ensureDraw();save();R()}
-function settings(){const d=D;return`<h1>Tournament Settings</h1><div class=pn>
+function settings(){const d=D;return`<h1>Tournament Settings</h1>${DSTALE?`<div class=pn role=status style="margin-bottom:12px"><span class=wa>Another admin changed the tournament.</span> <button class=b onclick="newD();R()">Load latest</button> <button class="b g" onclick="DSTALE=false;R()">Keep editing</button></div>`:''}<div class=pn>
 <label>Title</label><input class=t value="${esc(d.title)}" oninput="D.title=this.value"><label>Subtitle</label><input class=t value="${esc(d.sub)}" oninput="D.sub=this.value">
 <div class=grid><div><label>Groups</label><input class=t type=number min=1 value=${d.ng} onchange="D.ng=+this.value;R()"></div><div><label>Qualifiers per group</label><input class=t type=number min=1 value=${d.q} onchange="D.q=+this.value;R()"></div><div><label>Third-place match</label><select class=t onchange="D.third=this.value=='1'"><option value=1 ${d.third?'selected':''}>Enabled</option><option value=0 ${d.third?'':'selected'}>Disabled</option></select></div></div>
 <p style="color:var(--mu)">Bracket size: ${d.ng*d.q} · Players: ${d.players.length}</p>
@@ -254,14 +284,16 @@ function settings(){const d=D;return`<h1>Tournament Settings</h1><div class=pn>
 <h2>Previous Champions</h2>${d.hist.map((h,i)=>h.t?'':`<div style="display:flex;gap:6px;margin:4px 0;flex-wrap:wrap"><input class=t style="flex:1;min-width:110px" value="${esc(h.season)}" aria-label=Season oninput="D.hist[${i}].season=this.value"><input class=t style="flex:1;min-width:110px" value="${esc(h.champ)}" aria-label=Champion oninput="D.hist[${i}].champ=this.value;delete D.hist[${i}].s"><input class=t style="flex:1;min-width:110px" value="${esc(h.ru||'')}" aria-label="Runner-up" oninput="D.hist[${i}].ru=this.value"><button class="b r" aria-label=remove onclick="D.hist.splice(${i},1);R()">✕</button></div>`).join('')}
 <div class=tabs><button class="b g" onclick="D.hist.push({season:'Season '+(D.hist.length+1),y:new Date().getFullYear(),champ:'',ru:''});R()">+ Add past champion</button></div>
 <div class=tabs><button class=b onclick="saveSet()">Save Settings</button><button class="b g" onclick="D=null;go('dash')">Cancel Changes</button>${champ()?'<button class="b g" onclick="newSeason()">Start new season</button>':''}<button class="b r" onclick="resetStats()">Reset stats</button><button class="b g" onclick="exp()">Export backup</button><label class="b g" style="display:inline-block;margin:0;font-size:inherit;color:inherit">Import backup<input type=file accept=".json,application/json" hidden onchange="imp(this)"></label></div></div>`}
-async function saveSet(){const d=D,e=[];if(d.ng<1||d.q<1)e.push('Groups and qualifiers must be at least 1.');
+// Saves only the fields edited in the draft on top of the latest state, so changes another admin made meanwhile survive.
+const SETL={title:'the title',sub:'the subtitle',ng:'the number of groups',q:'qualifiers per group',third:'the third-place match',players:'the players',hist:'previous champions'};
+async function saveSet(){const m=SYNC.merge(D,DB||S,S),d=m.data,e=[];if(d.ng<1||d.q<1)e.push('Groups and qualifiers must be at least 1.');
 const names=d.players.map(p=>p.name.trim().toLowerCase());if(names.some(x=>!x)||new Set(names).size!=names.length)e.push('Player names must be unique and non-empty.');
 for(let g=0;g<d.ng;g++){const c=d.players.filter(p=>p.g==g).length;if(c<d.q+0||c<2)e.push(`Group ${GN(g)} has ${c} players (needs at least ${Math.max(2,d.q)}).`)}
 const n=d.ng*d.q;if(!Number.isInteger(Math.log2(n))||n<2)e.push(`${n} qualifiers cannot form a bracket (must be 2, 4, 8, 16…).`);
 if(e.length){toast(e[0],'er');return}
+if(m.conflicts.length&&!await ask('Another admin also changed '+m.conflicts.map(k=>SETL[k]).join(', ')+' while you were editing. Save your version anyway?')){DSTALE=true;R();return}
 const struct=JSON.stringify(d.players.map(p=>[p.id,p.g]))!=JSON.stringify(S.players.map(p=>[p.id,p.g]))||d.ng!=S.ng||d.q!=S.q;
 if(struct&&(Object.keys(S.sc).length||S.ko.draw)){if(!await ask('This changes groups/fixtures and will clear submitted scores, manual rankings and the knockout bracket. Continue?'))return;d.sc={};d.man={};d.lock={};d.ko={res:{},draw:null};d.ann=false}
-else if(d.third!=S.third){d.ann=S.ann}
 d.players.forEach(p=>p.name=p.name.trim());S=d;D=null;save();toast('Settings saved');go('set')}
 function exp(){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(S,null,1)],{type:'application/json'}));a.download='efootball-arena-backup.json';a.click()}
 function imp(el){const f=el.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{const o=JSON.parse(r.result);if(o.v!==1||!Array.isArray(o.players)||!o.players.every(p=>p.id&&p.name!=null&&Number.isInteger(p.g))||!o.sc||!o.ko||!o.ko.res||!(o.ng>0)||!(o.q>0))throw 0;PACT='import_backup';S=o;D=null;save();toast('Backup restored');go('dash')}catch(e){toast('Invalid backup file.','er')}};r.readAsText(f)}
@@ -302,5 +334,6 @@ if(!h||rm){leaving=false;go('dash');return}
 h.classList.add('out');setTimeout(()=>{leaving=false;go('dash')},980)}
 R();
 api('/api/me').then(({r,j})=>{if(r.ok){ED=true;ME=j;if(V!='welcome')R()}}).catch(()=>{});
-Promise.race([pull(true),new Promise(r=>setTimeout(r,2500))]).then(()=>{if(V=='welcome'||V=='dash')R();setInterval(()=>pull(),3000)});
+Promise.race([pull(true),new Promise(r=>setTimeout(r,2500))]).then(()=>{if(V=='welcome'||V=='dash')R();poll()});
+live();
 </script></body></html>

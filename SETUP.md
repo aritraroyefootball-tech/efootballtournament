@@ -1,6 +1,6 @@
 # Setup guide (for the repo owner)
 
-eFootball Arena stores everything in **Supabase Postgres**, which is used only as a database: there's no Supabase Auth, and the browser never talks to Supabase. Every request goes through the Vercel functions in `api/`, which hold the `service_role` key.
+eFootball Arena stores everything in **Supabase Postgres**, which is used only as a database: there's no Supabase Auth. Every read and write goes through the Vercel functions in `api/`, which hold the `service_role` key. The one exception is **live updates**: the browser *listens* to Supabase Realtime with the public `anon` key, so every open page sees changes within about a second. It never writes to Supabase.
 
 Editors log in with their own username and password. One **owner** account manages the other admins. Every change is written to an append-only **audit log**, and the last 20 states are kept as **snapshots** the owner can roll back to.
 
@@ -10,9 +10,11 @@ Editors log in with their own username and password. One **owner** account manag
 
 1. Create a project at <https://supabase.com> (the free tier is fine).
 2. Open **SQL Editor → New query**, paste all of [`supabase/migrations/001_init.sql`](supabase/migrations/001_init.sql), and click **Run**.
-3. Open **Project Settings → API** and copy:
+3. Do the same with [`supabase/migrations/002_realtime.sql`](supabase/migrations/002_realtime.sql). It turns on Realtime for `tournament_state` and lets the public key *read* that one table. It's safe to run again, and existing projects only need this step.
+4. Open **Project Settings → API** (or **API Keys**) and copy:
    - the **Project URL**, which becomes `SUPABASE_URL`;
-   - the **`service_role`** key (*not* the `anon` key), which becomes `SUPABASE_SERVICE_ROLE_KEY`.
+   - the **`service_role`** (secret) key, which becomes `SUPABASE_SERVICE_ROLE_KEY`;
+   - the **`anon`** (publishable) key, which becomes `SUPABASE_ANON_KEY`.
 
    Treat the service_role key like a root password. It bypasses Row Level Security, so it must only ever live in Vercel's environment variables.
 
@@ -24,6 +26,7 @@ In **Vercel → Project → Settings → Environment Variables**, add:
 |---|---|
 | `SUPABASE_URL` | Project URL from step 1 |
 | `SUPABASE_SERVICE_ROLE_KEY` | service_role key from step 1 |
+| `SUPABASE_ANON_KEY` | anon / publishable key from step 1. Set it for **Production and Preview**. It's optional: without it, pages fall back to checking for changes every 5 seconds |
 | `SETUP_TOKEN` | A long random string. Generate one with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 
 Delete the old variables. The app no longer uses them: `ADMIN_PASSWORD`, `KV_REST_API_URL`, `KV_REST_API_TOKEN`, `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`. You can also remove the Upstash integration.
@@ -79,13 +82,27 @@ Nobody can reset the owner's password from the app. Instead:
    ```
 3. Log in with the new password. You'll be asked to choose another one right away.
 
-## 7. Local development
+## 7. Live updates
+
+When anyone saves, every open page updates within about a second, for logged-in admins and public viewers alike, with no refresh. A small "Updated by another admin" toast appears, at most once every 10 seconds.
+
+- **How it works.** The page asks `GET /api/config` for the Project URL and anon key, loads `supabase-js` from a pinned CDN version (with an integrity hash), and subscribes to `UPDATE`s on `tournament_state`. On reconnect, when the tab becomes visible again, or when the network comes back, it fetches `/api/state` once to catch anything it missed.
+- **Fallback.** If Realtime isn't configured or can't connect, the page polls `GET /api/state?rev=N` every 5 seconds while the tab is visible. Polling pauses while the tab is hidden. When nothing has changed, the server replies `{"unchanged":true}`. While Realtime is connected, a slow 30-second poll stays on as a safety net.
+- **Your work in progress is kept.**
+  - **Matches.** Scores you've typed but not submitted stay in place. If someone else changed the same match, it's tagged *Another admin updated this match*.
+  - **Settings.** If you haven't changed anything, the form refreshes quietly. If you have unsaved changes, a banner offers **Load latest** (discard your draft) or **Keep editing**. Saving writes only the fields you edited on top of the latest state. If someone else changed one of the same fields, you're asked first.
+  - **Confirm dialogs.** Updates wait until the dialog closes.
+  - The server's 409 revision check stays as the final safety net.
+
+**Try it with two browsers.** Open the site in a normal window and in a private window (or a second browser), and log in as two different admins. Add a player in one and save: the other shows it within about a second, on any page. Repeat with a logged-out private window to see the public view update. To test the fallback, remove `SUPABASE_ANON_KEY` (or run without it locally). Updates then arrive within about 5 seconds. In DevTools → Network, filter by `supabase`. You should only see the script download and one `websocket` connection, never a `POST`.
+
+## 8. Local development
 
 Use the Vercel CLI, because the API routes don't run under Live Server or other static servers.
 
 ```
 npm install
-cp .env.example .env.local      # fill in the three values (a separate dev Supabase project is a good idea)
+cp .env.example .env.local      # fill in the values (a separate dev Supabase project is a good idea)
 npx vercel dev                  # http://localhost:3000
 npm test                        # unit tests (no database needed)
 ```
@@ -107,7 +124,11 @@ The session cookie is `Secure`. Chrome and Firefox still accept Secure cookies o
   - More than 5 failed attempts for a username, or 20 from one IP, within 15 minutes → `429 Too many attempts`.
   - The error message is the same whether the username doesn't exist, the password is wrong, or the account is deactivated.
 - **Database access**
-  - Row Level Security is enabled on every table, with no policies. The public `anon` key can't read or write anything.
+  - Row Level Security is enabled on every table.
+  - `tournament_state` has exactly one policy: `anon` and `authenticated` may `SELECT` it. They can see the columns `id`, `data`, `rev` and `updated_at`, the same data `GET /api/state` already serves publicly. This is what Realtime needs.
+  - There are no insert, update or delete policies or grants anywhere. The public key can't write anything.
+  - `admins`, `sessions`, `login_attempts`, `audit_log` and `state_snapshots` have no policies and no grants. With the public key they stay completely unreadable.
+  - `/api/config` only ever returns a key that is an anon or publishable key. It refuses to send anything that looks like the service_role key.
   - Access to the `save_state` function is revoked for `anon` and `authenticated`.
 - **Audit log**
   - A trigger rejects `UPDATE`, `DELETE` and `TRUNCATE` on `audit_log` for every role, including service_role.

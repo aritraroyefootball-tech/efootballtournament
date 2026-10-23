@@ -10,7 +10,7 @@ Anyone can view the dashboard, matches, standings and knockout bracket without l
 - One **owner** creates, deactivates, reactivates and resets the passwords of the other admins on the **Admins** page.
 - Every change is recorded in an **append-only audit log**, which admins can view on the **Activity** page.
 - The last 20 states are kept as **snapshots**. The owner can restore any of them.
-- Data lives in **Supabase Postgres**, which is accessed only by the serverless functions in `api/`. The browser never talks to Supabase directly.
+- Data lives in **Supabase Postgres**, and all reads and writes go through the serverless functions in `api/`. To get **live updates**, the browser listens on Supabase Realtime with the public anon key. That key can only read the tournament data, and it can't write anything. If Realtime isn't set up, pages poll every 5 seconds instead.
 
 See **[SETUP.md](SETUP.md)** for deployment, first-time owner setup, data migration, password recovery and local development.
 
