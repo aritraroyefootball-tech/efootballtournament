@@ -105,7 +105,8 @@ function diffState(o, n, hint) {
     // "Wiped" needs at least 2 cleared items, so clearing a lone score isn't labelled a stats reset.
     const had = Object.keys(osc).length + Object.keys(ores).length + (oko.draw ? 1 : 0);
     const wiped = had >= 2 && !Object.keys(nsc).length && !Object.keys(nres).length && !nko.draw;
-    const structural = changes.some(c => c.type === 'setting' || c.type.startsWith('player_'));
+    // Removing every player is part of Reset stats, so it doesn't count as a structural edit.
+    const structural = changes.some(c => c.type === 'setting' || (c.type.startsWith('player_') && !(c.type === 'player_removed' && !np.size)));
     if (o.tid !== undefined && o.tid !== n.tid) {
       const oc = arr(o.hist).find(h => h && h.t === o.tid);
       action = oc && arr(n.hist).some(h => h && !h.t && h.champ === oc.champ && h.season === oc.season) && samePlayers ? 'new_season' : 'reset';
@@ -113,22 +114,32 @@ function diffState(o, n, hint) {
     else action = 'state_update';
   }
 
-  return { action, summary: summarize(action, changes), changes: changes.slice(0, 500) };
+  // counts and removed names come from the full list, before it is capped at 500 entries
+  const counts = tally(changes);
+  const removedPlayers = changes.filter(c => c.type === 'player_removed').map(c => c.name);
+  return { action, summary: summarize(action, changes, counts), changes: changes.slice(0, 500), counts, removedPlayers };
 }
 
-function summarize(action, changes) {
+function tally(changes) {
   const count = t => changes.filter(c => t.includes(c.type)).length;
+  return {
+    playersRemoved: count(['player_removed']), playersAdded: count(['player_added']), playerChanges: count(['player_renamed', 'player_moved']),
+    scoresCleared: count(['score_cleared']), scoresSet: count(['score_set', 'score_changed']),
+    koCleared: count(['ko_cleared']), koSet: count(['ko_set', 'ko_changed']), settings: count(['setting']),
+  };
+}
+
+function summarize(action, changes, n) {
   if (HINTS[action]) {
     const parts = [];
-    const cs = count(['score_cleared']), ss = count(['score_set', 'score_changed']);
-    const ck = count(['ko_cleared']), sk = count(['ko_set', 'ko_changed']);
-    const pl = changes.filter(c => c.type.startsWith('player_')).length, st = count(['setting']);
-    if (cs) parts.push('cleared ' + plural(cs, 'score'));
-    if (ss) parts.push('set ' + plural(ss, 'score'));
-    if (ck) parts.push('cleared ' + plural(ck, 'knockout result'));
-    if (sk) parts.push('set ' + plural(sk, 'knockout result'));
-    if (pl) parts.push(plural(pl, 'player change'));
-    if (st) parts.push(plural(st, 'setting change'));
+    if (n.playersRemoved) parts.push('removed ' + plural(n.playersRemoved, 'player'));
+    if (n.playersAdded) parts.push('added ' + plural(n.playersAdded, 'player'));
+    if (n.scoresCleared) parts.push('cleared ' + plural(n.scoresCleared, 'score'));
+    if (n.scoresSet) parts.push('set ' + plural(n.scoresSet, 'score'));
+    if (n.koCleared) parts.push('cleared ' + plural(n.koCleared, 'knockout result'));
+    if (n.koSet) parts.push('set ' + plural(n.koSet, 'knockout result'));
+    if (n.playerChanges) parts.push(plural(n.playerChanges, 'player change'));
+    if (n.settings) parts.push(plural(n.settings, 'setting change'));
     return `${HINTS[action]}: ${parts.join(', ') || 'no data changes'}`;
   }
   if (!changes.length) return 'No visible changes';

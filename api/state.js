@@ -29,7 +29,7 @@ module.exports = route({
     }
     const r = await saveState({
       baseRev, data: d, actor: me,
-      action: df.action, summary: df.summary, details: { changes: df.changes },
+      action: df.action, summary: df.summary, details: { changes: df.changes, counts: df.counts, removedPlayers: df.removedPlayers },
       reason: `Before ${df.action}: ${df.summary}`,
     });
     if (!r.ok) return send(res, 409, { error: 'Conflict', ...(await current()) });
