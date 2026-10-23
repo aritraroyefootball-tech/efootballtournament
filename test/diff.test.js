@@ -96,6 +96,30 @@ test('reset stats: derived and via hint', () => {
   }
 });
 
+test('reset stats that removes players: summary, counts and removed names', () => {
+  // 16 players in 4 groups of 4 → 6 matches per group → 24 scores, like def() in index.html
+  const o = base();
+  o.players = Array.from({ length: 16 }, (_, i) => ({ id: 'p' + i, name: 'Player ' + (i + 1), g: i % 4 }));
+  o.ng = 4;
+  for (let g = 0; g < 4; g++) {
+    const ids = o.players.filter(p => p.g === g).map(p => p.id);
+    for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) o.sc[`G${g}R1_${ids[i]}_${ids[j]}`] = [1, 0];
+  }
+  o.hist = [{ season: 'Old Cup', champ: 'Someone' }];
+  const n = clone(o);
+  n.players = []; n.sc = {}; n.man = {}; n.lock = {}; n.ko = { res: {}, draw: null };
+
+  for (const d of [diffState(o, n, 'reset_stats'), diffState(o, n)]) {
+    assert.equal(d.action, 'reset_stats');
+    assert.equal(d.summary, 'Reset stats: removed 16 players, cleared 24 scores');
+    assert.equal(d.counts.playersRemoved, 16);
+    assert.equal(d.counts.scoresCleared, 24);
+    assert.equal(d.removedPlayers.length, 16);
+    assert.deepEqual(d.removedPlayers.slice(0, 2), ['Player 1', 'Player 2']);
+    assert.ok(!d.changes.some(c => c.type === 'setting' || c.type === 'hall_of_fame'), 'settings and past champions untouched');
+  }
+});
+
 test('full reset: derived and via hint', () => {
   const o = played(); o.title = 'Old title';
   const n = base(); n.tid = 't2';
