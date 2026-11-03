@@ -1,4 +1,4 @@
--- eFootball Arena: live updates via Supabase Realtime
+-- FC Mobile Arena: live updates via Supabase Realtime
 -- Run after 001_init.sql in the Supabase SQL editor. Safe to re-run.
 --
 -- Security model (changes to 001)

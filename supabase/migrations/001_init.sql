@@ -1,4 +1,4 @@
--- eFootball Arena: initial schema
+-- FC Mobile Arena: initial schema
 -- Run once in the Supabase SQL editor (Dashboard → SQL Editor → New query → paste → Run).
 --
 -- Security model
