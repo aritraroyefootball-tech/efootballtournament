@@ -1,4 +1,4 @@
-# eFootball Arena
+# FC Mobile Arena
 
 A single-file tournament manager (`index.html`, vanilla JS, no build step) deployed on Vercel. It covers group stage fixtures, standings with tie-breaks, a knockout bracket, a champion reveal, and a Hall of Fame.
 
@@ -13,6 +13,8 @@ Anyone can view the dashboard, matches, standings and knockout bracket without l
 - Data lives in **Supabase Postgres**, and all reads and writes go through the serverless functions in `api/`. To get **live updates**, the browser listens on Supabase Realtime with the public anon key. That key can only read the tournament data, and it can't write anything. If Realtime isn't set up, pages poll every 5 seconds instead.
 
 See **[SETUP.md](SETUP.md)** for deployment, first-time owner setup, data migration, password recovery and local development.
+
+**Renamed from eFootball Arena.** The tournament title is saved data, so the live tournament keeps its old title until you change it. To rename the live tournament, log in as owner → Settings → change Tournament title → Save (this gets recorded in Activity). Backups exported as `efootball-arena-backup.json` still import normally.
 
 ```
 npm install

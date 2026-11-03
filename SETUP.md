@@ -1,6 +1,6 @@
 # Setup guide (for the repo owner)
 
-eFootball Arena stores everything in **Supabase Postgres**, which is used only as a database: there's no Supabase Auth. Every read and write goes through the Vercel functions in `api/`, which hold the `service_role` key. The one exception is **live updates**: the browser *listens* to Supabase Realtime with the public `anon` key, so every open page sees changes within about a second. It never writes to Supabase.
+FC Mobile Arena stores everything in **Supabase Postgres**, which is used only as a database: there's no Supabase Auth. Every read and write goes through the Vercel functions in `api/`, which hold the `service_role` key. The one exception is **live updates**: the browser *listens* to Supabase Realtime with the public `anon` key, so every open page sees changes within about a second. It never writes to Supabase.
 
 Editors log in with their own username and password. One **owner** account manages the other admins. Every change is written to an append-only **audit log**, and the last 20 states are kept as **snapshots** the owner can roll back to.
 
@@ -58,12 +58,14 @@ Every admin (not just the owner) can see the **Activity** page: who changed what
 Do this **before** switching the old deployment over.
 
 1. Save a backup of the current state from the old site. Either:
-   - open the old site, press F12 → Console, type `exp()` and press Enter. This downloads `efootball-arena-backup.json`; or
+   - open the old site, press F12 → Console, type `exp()` and press Enter. This downloads `fc-mobile-arena-backup.json` (versions from before the rebrand name it `efootball-arena-backup.json`, which imports just the same); or
    - run `curl https://YOUR-OLD-SITE/api/state`. The response is `{"data": {...}, "rev": ...}`. Save **only the `data` object** as `backup.json`.
 2. Do steps 1–4 above.
 3. Log in as the owner, open **Settings → Import backup**, and choose the file.
 
 The import is saved to the database and appears in Activity as `import_backup`.
+
+**Renaming the live tournament.** The app was renamed from eFootball Arena to FC Mobile Arena. The tournament title is stored in the database, so the new default title only applies to new or reset tournaments. To rename the live tournament, log in as owner → Settings → change Tournament title → Save (this gets recorded in Activity).
 
 ## 6. Recovering a lost owner password
 
